@@ -103,13 +103,6 @@ python mcp_music_client.py
 - M4A
 - FLAC
 
-## Güvenlik
-
-⚠️ **ÖNEMLİ**: 
-- `.env` dosyası `.gitignore`'da bulunur ve GitHub'a yüklenmez
-- API anahtarlarınızı asla kod içerisinde hardcode etmeyin
-- Production ortamında environment variables kullanın
-
 ## Katkıda Bulunma
 
 1. Fork yapın
@@ -117,10 +110,6 @@ python mcp_music_client.py
 3. Değişikliklerinizi commit edin (`git commit -m 'Add some amazing feature'`)
 4. Branch'inizi push edin (`git push origin feature/amazing-feature`)
 5. Pull Request açın
-
-## Lisans
-
-Bu proje MIT lisansı altında lisanslanmıştır.
 
 ## Sorun Giderme
 
