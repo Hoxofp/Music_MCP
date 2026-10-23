@@ -1,136 +1,120 @@
-# Music MCP Server 🎵
+# music-mcp
 
-Ses dosyalarını tanıyıp Spotify'a ekleyen MCP (Model Context Protocol) server.
+[![CI](https://github.com/Hoxofp/Music_MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/Hoxofp/Music_MCP/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
+![MCP SDK](https://img.shields.io/badge/MCP%20SDK-v2-black)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-## Özellikler
+An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant **identify the song in an
+audio file and put it in your Spotify library**: Shazam for your agent.
 
-- 🎵 Ses dosyası tanıma (ACRCloud API)
-- 🎧 Spotify entegrasyonu
-- 📱 RESTful API
-- 🔒 Güvenli API anahtar yönetimi
-- 📊 Test raporları
+```text
+You:     What's the song in ~/Downloads/party.m4a? Add it to my "Found Sounds" playlist.
+Claude:  ▸ identify_song(path="~/Downloads/party.m4a")      → "Midnight City" by M83 (score 98)
+         ▸ list_playlists()                                  → "Found Sounds" (id 3cEY…)
+         ▸ add_to_playlist(playlist_id="3cEY…", track_ids=["1eyzqe2QqGZUmfcPZtrIyt"])
+         Added "Midnight City" by M83 to Found Sounds.
+```
 
-## Kurulum
+## Tools
 
-### 1. Projeyi Klonlayın
+| Tool | What it does | Hints |
+|---|---|---|
+| `identify_song` | Fingerprints a ~12 s sample of a local file with ACRCloud; returns the best match + alternatives, with ISRC and Spotify ID when available | read-only |
+| `search_tracks` | Spotify catalog search | read-only |
+| `save_to_library` | Saves tracks to Liked Songs (accepts IDs, `spotify:track:` URIs or links) | write, idempotent |
+| `create_playlist` | Creates a playlist (private by default) | write |
+| `add_to_playlist` | Appends tracks to a playlist | write, not idempotent |
+| `list_playlists` | Lists the user's playlists | read-only |
+
+Also: a `music://history` resource (songs identified this session) and an `identify_and_save` prompt.
+Every tool returns **structured output** with a JSON schema, and failures come back as tool errors
+the model can read and recover from (e.g. *"Not logged in to Spotify. Run `music-mcp auth`"*).
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[MCP client<br/>Claude Desktop / Claude Code / Cursor] -- stdio --> S[music-mcp]
+    S -- trim to ~12 s<br/>pydub + ffmpeg --> F[(local audio file)]
+    S -- HMAC-SHA1 signed<br/>multipart --> ACR[ACRCloud<br/>Identification API]
+    S -- Bearer token<br/>PKCE + refresh --> SP[Spotify Web API]
+```
+
+- **MCP SDK v2** (`MCPServer`), typed lifespan holding a shared `httpx.AsyncClient`.
+- **Spotify auth:** Authorization Code + **PKCE**, so no client secret is needed. The token is stored with
+  `0600` permissions and refreshed automatically; a `401` triggers one forced refresh and retry, and
+  a `429` honours `Retry-After`.
+- Uses Spotify's **post-February-2026 endpoints** (`PUT /me/library`, `POST /me/playlists`,
+  `POST /playlists/{id}/items`).
+- **Sandboxed file access:** set `MUSIC_MCP_AUDIO_DIR` and the model can only read audio inside it.
+  Extension and size are validated before anything is read.
+
+## Quick start
 
 ```bash
-git clone <repo-url>
-cd music_mcp
+git clone https://github.com/Hoxofp/Music_MCP && cd Music_MCP
+uv sync --extra audio          # or: pip install -e ".[audio]"   (needs ffmpeg for exact trimming)
+cp .env.example .env           # fill in ACRCloud + Spotify client ID
+uv run music-mcp auth          # one-time Spotify login in your browser
 ```
 
-### 2. Sanal Ortam Oluşturun
+**Credentials**
+
+1. **ACRCloud:** create an *Audio & Video Recognition* project at <https://console.acrcloud.com>
+   and copy host, access key and secret.
+2. **Spotify:** create an app at <https://developer.spotify.com/dashboard> and add the redirect URI
+   `http://127.0.0.1:8888/callback` (loopback IP, not `localhost`). Only the client ID is required.
+
+**Claude Desktop**: `claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "music": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/Music_MCP", "run", "music-mcp"],
+      "env": { "MUSIC_MCP_AUDIO_DIR": "/Users/you/Music" }
+    }
+  }
+}
+```
+
+**Claude Code**
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# veya
-venv\Scripts\activate     # Windows
+claude mcp add music -- uv --directory /path/to/Music_MCP run music-mcp
 ```
 
-### 3. Gereksinimleri Yükleyin
+## Configuration
+
+| Variable | Required | Default |
+|---|---|---|
+| `ACRCLOUD_HOST`, `ACRCLOUD_ACCESS_KEY`, `ACRCLOUD_ACCESS_SECRET` | for `identify_song` | — |
+| `SPOTIFY_CLIENT_ID` | for Spotify tools | — |
+| `SPOTIFY_CLIENT_SECRET` | no (enables search before login) | — |
+| `SPOTIFY_REDIRECT_URI` | no | `http://127.0.0.1:8888/callback` |
+| `MUSIC_MCP_AUDIO_DIR` | no, recommended | unrestricted |
+| `MUSIC_MCP_TOKEN_PATH` | no | `~/.config/music-mcp/spotify_token.json` (`%APPDATA%` on Windows) |
+
+## Development
 
 ```bash
-pip install -r requirements.txt
+uv sync --extra audio
+uv run pytest            # unit + end-to-end tests over the MCP protocol (in-memory client, mocked HTTP)
+uv run ruff check . && uv run ruff format --check .
 ```
 
-### 4. Environment Variables Ayarlayın
+The test suite drives the real server through an in-memory MCP `Client`, with ACRCloud and Spotify
+replaced by `httpx.MockTransport`. It covers request signing, token refresh and retry, endpoint
+chunking limits, the path sandbox, and error surfacing.
 
-`.env.example` dosyasını `.env` olarak kopyalayın:
+## Changelog
 
-```bash
-cp .env.example .env
-```
+- **2.0.0** — Rewritten as a protocol-native MCP server on the official Python SDK v2 (the 1.x
+  prototype was a REST service with MCP-style endpoints, built while learning the protocol).
+  PKCE auth, structured outputs, tool annotations, Feb-2026 Spotify API, tests and CI.
 
-`.env` dosyasını düzenleyerek API anahtarlarınızı ekleyin:
+## License
 
-```env
-# Spotify API Credentials
-SPOTIFY_CLIENT_ID=your_spotify_client_id_here
-SPOTIFY_CLIENT_SECRET=your_spotify_client_secret_here
-SPOTIFY_REDIRECT_URI=http://127.0.0.1:8002/callback
-
-# ACRCloud API Credentials
-ACRCLOUD_HOST=identify-ap-southeast-1.acrcloud.com
-ACRCLOUD_ACCESS_KEY=your_acrcloud_access_key_here
-ACRCLOUD_ACCESS_SECRET=your_acrcloud_access_secret_here
-```
-
-## API Anahtarları Alma
-
-### Spotify API
-
-1. [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) adresine gidin
-2. Yeni bir uygulama oluşturun
-3. Client ID ve Client Secret'ı kopyalayın
-4. Redirect URI olarak `http://127.0.0.1:8002/callback` ekleyin
-
-### ACRCloud API
-
-1. [ACRCloud Console](https://console.acrcloud.com) adresine gidin
-2. Hesap oluşturun ve giriş yapın
-3. Yeni bir proje oluşturun
-4. Access Key ve Access Secret'ı kopyalayın
-
-## Kullanım
-
-### Server'ı Başlatma
-
-```bash
-python mcp_music_server.py
-```
-
-Server `http://127.0.0.1:8002` adresinde çalışacaktır.
-
-### Client Test Etme
-
-```bash
-python mcp_music_client.py
-```
-
-## API Endpoints
-
-- `GET /` - Server durumu
-- `POST /upload_audio` - Ses dosyası yükleme
-- `POST /tool_call` - MCP tool çağrısı
-- `GET /spotify/auth` - Spotify yetkilendirme
-- `GET /callback` - Spotify callback
-
-## Desteklenen Ses Formatları
-
-- MP3
-- WAV
-- M4A
-- FLAC
-
-## Katkıda Bulunma
-
-1. Fork yapın
-2. Feature branch oluşturun (`git checkout -b feature/amazing-feature`)
-3. Değişikliklerinizi commit edin (`git commit -m 'Add some amazing feature'`)
-4. Branch'inizi push edin (`git push origin feature/amazing-feature`)
-5. Pull Request açın
-
-## Sorun Giderme
-
-### Yaygın Hatalar
-
-1. **"config.json bulunamadı"** - Normal, artık `.env` dosyası kullanılıyor
-2. **"python-dotenv yüklenemedi"** - `pip install python-dotenv` çalıştırın
-3. **API anahtarı hatası** - `.env` dosyasındaki anahtarları kontrol edin
-
-### Debug Modu
-
-Debug modunu açmak için `.env` dosyasında:
-
-```env
-DEBUG=true
-```
-
-## Test Sonuçları
-
-Test sonuçları `mcp_music_test_report.json` dosyasında saklanır.
-
-## İletişim
-
-Sorularınız için issue açabilirsiniz.
+MIT © Ahmet Mervan Erman
